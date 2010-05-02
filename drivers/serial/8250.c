@@ -41,6 +41,20 @@
 #include <linux/nmi.h>
 #include <linux/mutex.h>
 
+#ifdef CONFIG_TANGO2
+#include <asm/tango2/rmdefs.h>
+#include <asm/tango2/tango2_gbus.h>
+#include <asm/tango2/tango2.h>
+#elif defined(CONFIG_TANGO3)
+#include <asm/tango3/rmdefs.h>
+#include <asm/tango3/tango3_gbus.h>
+#include <asm/tango3/tango3.h>
+#endif
+
+#ifdef CONFIG_TANGOX
+extern unsigned long tangox_get_sysclock(void);
+#endif
+
 #include <asm/io.h>
 #include <asm/irq.h>
 
@@ -354,8 +368,20 @@ static unsigned int serial_in(struct uart_8250_port *up, int offset)
 
 	case UPIO_MEM:
 	case UPIO_DWAPB:
-		return readb(up->port.membase + offset);
+#ifdef CONFIG_TANGOX
+        {
+                unsigned long v;
 
+                /* no EFR on tango2/tango3 */
+                if (offset == (UART_EFR << up->port.regshift))
+                        v = 0;
+                else
+                        v = gbus_read_reg32((u32)(up->port.membase +  offset));
+                return v;
+        }
+#else
+                return readb(up->port.membase + offset);
+#endif
 	case UPIO_RM9000:
 	case UPIO_MEM32:
 		return readl(up->port.membase + offset);
@@ -391,8 +417,39 @@ serial_out(struct uart_8250_port *up, int offset, int value)
 		break;
 
 	case UPIO_MEM:
+#ifdef CONFIG_TANGOX
+		/*
+		 * we add  a special case for  UART_DL register, since
+		 * register content has a different meaning for us.
+		 */
+		if (offset == (UART_DL << up->port.regshift)) {
+			/* select right clock source */
+#ifdef CONFIG_TANGOX_UART_USE_SYSCLK
+			value = (tangox_get_sysclock() / up->port.uartclk);
+#else
+#ifdef CONFIG_TANGO2
+			value = (TANGOX_BASE_FREQUENCY / up->port.uartclk); 
+			if ((((TANGOX_BASE_FREQUENCY * 10) / up->port.uartclk) % 10) >= 5)
+				value++;
+#elif defined(CONFIG_TANGO3)
+			value = TANGO3_UART_FREQUENCY / up->port.uartclk;
+			if ((((TANGO3_UART_FREQUENCY * 10) / up->port.uartclk) % 10) >= 5)
+				value++;
+#else
+#error Unsupported platform.
+#endif
+#endif
+		}
+
+		/* no EFR on tango2/tango3 */
+		if (offset != (UART_EFR << up->port.regshift))
+			gbus_write_reg32((unsigned long)up->port.membase +
+				    offset, value);
+		break;
+#else
 		writeb(value, up->port.membase + offset);
 		break;
+#endif
 
 	case UPIO_RM9000:
 	case UPIO_MEM32:
@@ -456,14 +513,22 @@ serial_out_sync(struct uart_8250_port *up, int offset, int value)
 /* Uart divisor latch read */
 static inline int _serial_dl_read(struct uart_8250_port *up)
 {
+#ifdef CONFIG_TANGOX
+        return serial_inp(up, UART_DL);
+#else
 	return serial_inp(up, UART_DLL) | serial_inp(up, UART_DLM) << 8;
+#endif
 }
 
 /* Uart divisor latch write */
 static inline void _serial_dl_write(struct uart_8250_port *up, int value)
 {
+#ifdef CONFIG_TANGOX
+        serial_outp(up, UART_DL, value);
+#else
 	serial_outp(up, UART_DLL, value & 0xff);
 	serial_outp(up, UART_DLM, value >> 8 & 0xff);
+#endif
 }
 
 #if defined (CONFIG_SERIAL_8250_AU1X00)
@@ -680,6 +745,16 @@ static unsigned int autoconfig_read_divisor_id(struct uart_8250_port *p)
 	old_lcr = serial_inp(p, UART_LCR);
 	serial_outp(p, UART_LCR, UART_LCR_DLAB);
 
+#ifdef CONFIG_TANGOX
+	old_dll = serial_inp(p, UART_DL) & 0xff;
+	old_dlm = serial_inp(p, UART_DL) >> 8;
+
+	serial_outp(p, UART_DL, 0);
+
+	id = serial_inp(p, UART_DL);
+
+	serial_outp(p, UART_DL, (old_dlm << 8) | old_dll);
+#else
 	old_dll = serial_inp(p, UART_DLL);
 	old_dlm = serial_inp(p, UART_DLM);
 
@@ -690,6 +765,7 @@ static unsigned int autoconfig_read_divisor_id(struct uart_8250_port *p)
 
 	serial_outp(p, UART_DLL, old_dll);
 	serial_outp(p, UART_DLM, old_dlm);
+#endif
 	serial_outp(p, UART_LCR, old_lcr);
 
 	return id;

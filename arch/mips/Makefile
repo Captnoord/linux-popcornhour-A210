@@ -589,6 +589,59 @@ core-$(CONFIG_TOSHIBA_RBTX4938) += arch/mips/tx4938/toshiba_rbtx4938/
 core-$(CONFIG_TOSHIBA_RBTX4938) += arch/mips/tx4938/common/
 load-$(CONFIG_TOSHIBA_RBTX4938) += 0xffffffff80100000
 
+ifdef CONFIG_TANGO2
+#
+# Tango2 board
+#
+include include/asm-mips/tango2/emhwlib_registers_tango2.inc
+include include/asm-mips/tango2/emhwlib_dram_tango2.inc
+else
+ifdef CONFIG_TANGO3
+#
+# Tango3 board
+#
+include include/asm-mips/tango3/emhwlib_registers_tango3.inc
+include include/asm-mips/tango3/emhwlib_dram_tango3.inc
+endif
+endif
+
+
+internal_hex = 0x$(shell printf "%x" $$(($(1))))
+
+core-$(CONFIG_TANGOX)		+= arch/mips/tangox/
+
+ifdef CONFIG_TANGO2
+cflags-$(CONFIG_TANGO2)		+= -Iinclude/asm-mips/mach-tango2
+load-$(CONFIG_TANGO2)		:= $(call internal_hex,0x80000000+	\
+					$(MEM_BASE_dram_controller_0_alias)+	\
+					$(FM_linuxmips__ftext))
+#ifdef RMCFLAGS
+#cflags-$(CONFIG_TANGO2)		+= $(RMCFLAGS)
+#else
+cflags-$(CONFIG_TANGO2)		+= -DEM86XX_CHIP=EM86XX_CHIPID_TANGO2
+cflags-$(CONFIG_TANGO2_ES4)	+= -DEM86XX_REVISION=4
+cflags-$(CONFIG_TANGO2_ES5)	+= -DEM86XX_REVISION=5
+cflags-$(CONFIG_TANGO2_ES6)	+= -DEM86XX_REVISION=6
+#endif
+else
+ifdef CONFIG_TANGO3
+KERNEL_START_ADDRESS		:= $(CPU_remap2_address)
+cflags-$(CONFIG_TANGO3)		+= -Iinclude/asm-mips/mach-tango3
+load-$(CONFIG_TANGO3)		:= $(call internal_hex,0x80000000+	\
+					$(KERNEL_START_ADDRESS))
+#ifdef RMCFLAGS
+#cflags-$(CONFIG_TANGO3)		+= $(RMCFLAGS)
+#else
+cflags-$(CONFIG_TANGO3)		+= -DEM86XX_CHIP=EM86XX_CHIPID_TANGO3
+cflags-$(CONFIG_TANGO3_865X)	+= -DEM86XX_REVISION=3
+cflags-$(CONFIG_TANGO3_864X)	+= -DEM86XX_REVISION=3
+#endif
+cflags-$(CONFIG_TANGO3)		+= -DCPU_REMAP_SPACE=$(KERNEL_START_ADDRESS) 
+cflags-$(CONFIG_TANGO3_865X)	+= -mtune=24kf
+cflags-$(CONFIG_TANGO3_864X)	+= -mtune=74kf -mdspr2
+endif
+endif
+
 cflags-y			+= -Iinclude/asm-mips/mach-generic
 drivers-$(CONFIG_PCI)		+= arch/mips/pci/
 

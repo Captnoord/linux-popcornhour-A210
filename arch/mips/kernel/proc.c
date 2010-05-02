@@ -131,6 +131,8 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		      cpu_has_dsp ? " dsp" : "",
 		      cpu_has_mipsmt ? " mt" : ""
 		);
+	seq_printf(m, "shadow register sets\t: %d\n",
+		       cpu_data[n].srsets);
 
 	sprintf(fmt, "VCE%%c exceptions\t\t: %s\n",
 	        cpu_has_vce ? "%u" : "not available");
@@ -138,6 +140,16 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 	seq_printf(m, fmt, 'I', vcei_count);
 	seq_printf(m, "\n");
 
+#ifdef CONFIG_TANGOX
+	{
+		extern unsigned long tangox_get_cpuclock(void);
+		extern unsigned long tangox_get_sysclock(void);
+		extern unsigned long tangox_get_dspclock(void);
+		seq_printf(m, "System bus frequency\t: %ld Hz\n", tangox_get_sysclock());
+		seq_printf(m, "CPU frequency\t\t: %ld Hz\n", tangox_get_cpuclock());
+		seq_printf(m, "DSP frequency\t\t: %ld Hz\n", tangox_get_dspclock());
+	}
+#endif
 	return 0;
 }
 

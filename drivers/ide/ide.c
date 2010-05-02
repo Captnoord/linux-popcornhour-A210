@@ -1668,6 +1668,18 @@ static void __init probe_for_hwifs (void)
 #ifdef CONFIG_H8300
 	h8300_ide_init();
 #endif
+#ifdef CONFIG_BLK_DEV_BMIDE_TANGOX
+	{
+		extern int __init tangox_bmide_init(void);
+		tangox_bmide_init();
+	}
+#endif
+#ifdef CONFIG_BLK_DEV_PBIDE_TANGOX
+	{
+		extern int __init tangox_pbide_init(void);
+		tangox_pbide_init();
+	}
+#endif
 }
 
 /*

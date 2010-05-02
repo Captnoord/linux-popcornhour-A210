@@ -1096,9 +1096,9 @@ static int init_irq (ide_hwif_t *hwif)
 	 */
 	if (!match || match->irq != hwif->irq) {
 		int sa = IRQF_DISABLED;
-#if defined(__mc68000__) || defined(CONFIG_APUS)
+#if defined(__mc68000__) || defined(CONFIG_APUS) || defined(CONFIG_TANGOX)
 		sa = IRQF_SHARED;
-#endif /* __mc68000__ || CONFIG_APUS */
+#endif /* __mc68000__ || CONFIG_APUS || CONFIG_TANGOX*/
 
 		if (IDE_CHIPSET_IS_PCI(hwif->chipset)) {
 			sa = IRQF_SHARED;

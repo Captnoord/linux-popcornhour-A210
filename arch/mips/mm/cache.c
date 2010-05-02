@@ -27,6 +27,10 @@ void (*flush_cache_page)(struct vm_area_struct *vma, unsigned long page,
 	unsigned long pfn);
 void (*flush_icache_range)(unsigned long start, unsigned long end);
 
+#ifdef CONFIG_TANGOX
+void (*flush_icache_page)(struct vm_area_struct *vma, struct page *page);
+#endif
+
 /* MIPS specific cache operations */
 void (*flush_cache_sigtramp)(unsigned long addr);
 void (*local_flush_data_cache_page)(void * addr);
@@ -66,6 +70,14 @@ asmlinkage int sys_cacheflush(unsigned long addr,
 	return 0;
 }
 
+/* write-back and invalidate dcache */
+void flush_dcache_range(void __user *userbuf, unsigned int len)
+{
+	unsigned long start_addr, addr;
+	for (start_addr = addr = (unsigned long)userbuf; addr < (start_addr + len); addr += PAGE_SIZE)
+		flush_data_cache_page(addr);
+}
+
 void __flush_dcache_page(struct page *page)
 {
 	struct address_space *mapping = page_mapping(page);
@@ -91,12 +103,17 @@ EXPORT_SYMBOL(__flush_dcache_page);
 
 void __flush_anon_page(struct page *page, unsigned long vmaddr)
 {
-	if (pages_do_alias((unsigned long)page_address(page), vmaddr)) {
-		void *kaddr;
+	unsigned long addr = (unsigned long) page_address(page);
 
-		kaddr = kmap_coherent(page, vmaddr);
-		flush_data_cache_page((unsigned long)kaddr);
-		kunmap_coherent();
+	if (pages_do_alias(addr, vmaddr)) {
+		if (page_mapped(page) && !Page_dcache_dirty(page)) {
+			void *kaddr;
+
+			kaddr = kmap_coherent(page, vmaddr);
+			flush_data_cache_page((unsigned long)kaddr);
+			kunmap_coherent();
+		} else
+			flush_data_cache_page(addr);
 	}
 }
 

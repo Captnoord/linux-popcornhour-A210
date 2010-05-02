@@ -8,6 +8,7 @@
  * Kevin D. Kissell, kevink@mips.com and Carsten Langgaard, carstenl@mips.com
  * Copyright (C) 2000 MIPS Technologies, Inc.  All rights reserved.
  */
+#include <linux/bug.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/signal.h>
@@ -58,6 +59,13 @@
 #define EXIT_CRITICAL(flags) local_irq_restore(flags)
 
 #endif /* CONFIG_MIPS_MT_SMTC */
+
+#ifdef CONFIG_TANGO2
+#include <asm/tango2/hardware.h>
+#endif
+#ifdef CONFIG_TANGO3
+#include <asm/tango3/hardware.h>
+#endif
 
 DEFINE_PER_CPU(struct mmu_gather, mmu_gathers);
 
@@ -130,6 +138,8 @@ void *kmap_coherent(struct page *page, unsigned long addr)
 	unsigned long old_ctx;
 	pte_t pte;
 	int tlbidx;
+
+	BUG_ON(Page_dcache_dirty(page));
 
 	inc_preempt_count();
 	idx = (addr >> PAGE_SHIFT) & (FIX_N_COLOURS - 1);
@@ -207,7 +217,8 @@ void copy_user_highpage(struct page *to, struct page *from,
 	void *vfrom, *vto;
 
 	vto = kmap_atomic(to, KM_USER1);
-	if (cpu_has_dc_aliases) {
+	if (cpu_has_dc_aliases &&
+	    page_mapped(from) && !Page_dcache_dirty(from)) {
 		vfrom = kmap_coherent(from, vaddr);
 		copy_page(vto, vfrom);
 		kunmap_coherent();
@@ -230,12 +241,16 @@ void copy_to_user_page(struct vm_area_struct *vma,
 	struct page *page, unsigned long vaddr, void *dst, const void *src,
 	unsigned long len)
 {
-	if (cpu_has_dc_aliases) {
+	if (cpu_has_dc_aliases &&
+	    page_mapped(page) && !Page_dcache_dirty(page)) {
 		void *vto = kmap_coherent(page, vaddr) + (vaddr & ~PAGE_MASK);
 		memcpy(vto, src, len);
 		kunmap_coherent();
-	} else
+	} else {
 		memcpy(dst, src, len);
+		if (cpu_has_dc_aliases)
+			SetPageDcacheDirty(page);
+	}
 	if ((vma->vm_flags & VM_EXEC) && !cpu_has_ic_fills_f_dc)
 		flush_cache_page(vma, vaddr, page_to_pfn(page));
 }
@@ -246,13 +261,16 @@ void copy_from_user_page(struct vm_area_struct *vma,
 	struct page *page, unsigned long vaddr, void *dst, const void *src,
 	unsigned long len)
 {
-	if (cpu_has_dc_aliases) {
-		void *vfrom =
-			kmap_coherent(page, vaddr) + (vaddr & ~PAGE_MASK);
+	if (cpu_has_dc_aliases &&
+	    page_mapped(page) && !Page_dcache_dirty(page)) {
+		void *vfrom = kmap_coherent(page, vaddr) + (vaddr & ~PAGE_MASK);
 		memcpy(dst, vfrom, len);
 		kunmap_coherent();
-	} else
+	} else {
 		memcpy(dst, src, len);
+		if (cpu_has_dc_aliases)
+			SetPageDcacheDirty(page);
+	}
 }
 
 EXPORT_SYMBOL(copy_from_user_page);
@@ -343,6 +361,13 @@ void __init paging_init(void)
 	unsigned long zholes_size[MAX_NR_ZONES] = { 0, };
 	unsigned long i, j, pfn;
 #endif
+	unsigned long max_dma_pfn = MAX_DMA_PFN;
+
+#if defined(CONFIG_TANGOX) && defined(CONFIG_PCI)
+	extern unsigned long em8xxx_kmem_start;
+	extern unsigned long em8xxx_kmem_size;
+	extern int tangox_pci_host_enabled(void);
+#endif
 
 	pagetable_init();
 
@@ -351,11 +376,17 @@ void __init paging_init(void)
 #endif
 	kmap_coherent_init();
 
+#if defined(CONFIG_TANGOX) && defined(CONFIG_PCI)
+	/* If PCI is used, then limit DMA memory to MAX_PCIMEM_MAP_SIZE if kernel memory is > MAX_PCIMEM_MAP_SIZE */
+	if (tangox_pci_host_enabled() && (em8xxx_kmem_size>(MAX_PCIMEM_MAP_SIZE<<20)))
+		max_dma_pfn = PFN_DOWN(virt_to_phys((void *)((em8xxx_kmem_start+(MAX_PCIMEM_MAP_SIZE<<20))&0xfff00000)));
+#endif
+
 #ifdef CONFIG_ZONE_DMA
-	if (min_low_pfn < MAX_DMA_PFN && MAX_DMA_PFN <= max_low_pfn) {
-		zones_size[ZONE_DMA] = MAX_DMA_PFN - min_low_pfn;
-		zones_size[ZONE_NORMAL] = max_low_pfn - MAX_DMA_PFN;
-	} else if (max_low_pfn < MAX_DMA_PFN)
+	if (min_low_pfn < max_dma_pfn && max_dma_pfn <= max_low_pfn) {
+		zones_size[ZONE_DMA] = max_dma_pfn - min_low_pfn;
+		zones_size[ZONE_NORMAL] = max_low_pfn - max_dma_pfn;
+	} else if (max_low_pfn < max_dma_pfn)
 		zones_size[ZONE_DMA] = max_low_pfn - min_low_pfn;
 	else
 #endif

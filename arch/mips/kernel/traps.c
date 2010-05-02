@@ -43,6 +43,16 @@
 #include <asm/types.h>
 #include <asm/stacktrace.h>
 
+#ifdef CONFIG_TANGO2
+#include <asm/tango2/emhwlib_registers_tango2.h>
+#include <asm/tango2/emhwlib_dram_tango2.h>
+#include <asm/tango2/hardware.h>
+#elif defined(CONFIG_TANGO3)
+#include <asm/tango3/emhwlib_registers_tango3.h>
+#include <asm/tango3/emhwlib_dram_tango3.h>
+#include <asm/tango3/hardware.h>
+#endif
+
 extern asmlinkage void handle_int(void);
 extern asmlinkage void handle_tlbm(void);
 extern asmlinkage void handle_tlbl(void);
@@ -1070,59 +1080,6 @@ void *set_except_vector(int n, void *addr)
 	return (void *)old_handler;
 }
 
-#ifdef CONFIG_CPU_MIPSR2_SRS
-/*
- * MIPSR2 shadow register set allocation
- * FIXME: SMP...
- */
-
-static struct shadow_registers {
-	/*
-	 * Number of shadow register sets supported
-	 */
-	unsigned long sr_supported;
-	/*
-	 * Bitmap of allocated shadow registers
-	 */
-	unsigned long sr_allocated;
-} shadow_registers;
-
-static void mips_srs_init(void)
-{
-	shadow_registers.sr_supported = ((read_c0_srsctl() >> 26) & 0x0f) + 1;
-	printk(KERN_INFO "%ld MIPSR2 register sets available\n",
-	       shadow_registers.sr_supported);
-	shadow_registers.sr_allocated = 1;	/* Set 0 used by kernel */
-}
-
-int mips_srs_max(void)
-{
-	return shadow_registers.sr_supported;
-}
-
-int mips_srs_alloc(void)
-{
-	struct shadow_registers *sr = &shadow_registers;
-	int set;
-
-again:
-	set = find_first_zero_bit(&sr->sr_allocated, sr->sr_supported);
-	if (set >= sr->sr_supported)
-		return -1;
-
-	if (test_and_set_bit(set, &sr->sr_allocated))
-		goto again;
-
-	return set;
-}
-
-void mips_srs_free(int set)
-{
-	struct shadow_registers *sr = &shadow_registers;
-
-	clear_bit(set, &sr->sr_allocated);
-}
-
 static asmlinkage void do_default_vi(void)
 {
 	show_regs(get_irq_regs());
@@ -1133,6 +1090,7 @@ static void *set_vi_srs_handler(int n, vi_handler_t addr, int srs)
 {
 	unsigned long handler;
 	unsigned long old_handler = vi_handlers[n];
+	int srssets = current_cpu_data.srsets;
 	u32 *w;
 	unsigned char *b;
 
@@ -1148,7 +1106,7 @@ static void *set_vi_srs_handler(int n, vi_handler_t addr, int srs)
 
 	b = (unsigned char *)(ebase + 0x200 + n*VECTORSPACING);
 
-	if (srs >= mips_srs_max())
+	if (srs >= srssets)
 		panic("Shadow register set %d not supported", srs);
 
 	if (cpu_has_veic) {
@@ -1156,7 +1114,7 @@ static void *set_vi_srs_handler(int n, vi_handler_t addr, int srs)
 			board_bind_eic_interrupt (n, srs);
 	} else if (cpu_has_vint) {
 		/* SRSMap is only defined if shadow sets are implemented */
-		if (mips_srs_max() > 1)
+		if (srssets > 1)
 			change_c0_srsmap (0xf << n*4, srs << n*4);
 	}
 
@@ -1222,14 +1180,6 @@ void *set_vi_handler(int n, vi_handler_t addr)
 {
 	return set_vi_srs_handler(n, addr, 0);
 }
-
-#else
-
-static inline void mips_srs_init(void)
-{
-}
-
-#endif /* CONFIG_CPU_MIPSR2_SRS */
 
 /*
  * This is used by native signal handling
@@ -1336,14 +1286,23 @@ void __init per_cpu_trap_init(void)
 #endif
 	if (current_cpu_data.isa_level == MIPS_CPU_ISA_IV)
 		status_set |= ST0_XX;
+	if (cpu_has_dsp)
+		status_set |= ST0_MX;
+
 	change_c0_status(ST0_CU|ST0_MX|ST0_RE|ST0_FR|ST0_BEV|ST0_TS|ST0_KX|ST0_SX|ST0_UX,
 			 status_set);
 
-	if (cpu_has_dsp)
-		set_c0_status(ST0_MX);
+	write_c0_ebase(ebase);
 
 #ifdef CONFIG_CPU_MIPSR2
-	write_c0_hwrena (0x0000000f); /* Allow rdhwr to all registers */
+	if (cpu_has_mips_r2) {
+		unsigned int enable = 0x0000000f;
+
+		if (cpu_has_userlocal)
+			enable |= (1 << 29);
+
+		write_c0_hwrena(enable);
+	}
 #endif
 
 #ifdef CONFIG_MIPS_MT_SMTC
@@ -1425,7 +1384,6 @@ void __init set_uncached_handler (unsigned long offset, void *addr, unsigned lon
 #ifdef CONFIG_64BIT
 	unsigned long uncached_ebase = TO_UNCAC(ebase);
 #endif
-
 	memcpy((void *)(uncached_ebase + offset), addr, size);
 }
 
@@ -1447,9 +1405,15 @@ void __init trap_init(void)
 	if (cpu_has_veic || cpu_has_vint)
 		ebase = (unsigned long) alloc_bootmem_low_pages (0x200 + VECTORSPACING*64);
 	else
+#ifdef CONFIG_TANGOX
+#ifdef CONFIG_TANGO3
+		ebase = KSEG0ADDR(CPU_REMAP_SPACE);
+#else
+		ebase = KSEG0ADDR(MEM_BASE_dram_controller_0_alias + FM_RESERVED);
+#endif
+#else
 		ebase = CAC_BASE;
-
-	mips_srs_init();
+#endif
 
 	per_cpu_trap_init();
 
@@ -1557,11 +1521,11 @@ void __init trap_init(void)
 
 	if (cpu_has_vce)
 		/* Special exception: R4[04]00 uses also the divec space. */
-		memcpy((void *)(CAC_BASE + 0x180), &except_vec3_r4000, 0x100);
+		memcpy((void *)(ebase + 0x180), &except_vec3_r4000, 0x100);
 	else if (cpu_has_4kex)
-		memcpy((void *)(CAC_BASE + 0x180), &except_vec3_generic, 0x80);
+		memcpy((void *)(ebase + 0x180), &except_vec3_generic, 0x80);
 	else
-		memcpy((void *)(CAC_BASE + 0x080), &except_vec3_generic, 0x80);
+		memcpy((void *)(ebase + 0x080), &except_vec3_generic, 0x80);
 
 	signal_init();
 #ifdef CONFIG_MIPS32_COMPAT
